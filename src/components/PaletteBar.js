@@ -1,10 +1,9 @@
 "use client";
 
 import { useRef } from "react";
-import { Icon } from "@iconify/react";
 import { PALETTE_ITEMS } from "@/lib/paletteConfig";
 import { makeWindconeDragGhost } from "@/lib/windconeArt";
-import { PALETTE_CUSTOM_ICONS } from "@/components/paletteIcons";
+import { PALETTE_CUSTOM_ICONS, PaletteTrashIcon } from "@/components/paletteIcons";
 
 export default function PaletteBar({ onAdd, onDelete, onHighlightBase }) {
   const ghostRef = useRef(null);
@@ -63,17 +62,7 @@ export default function PaletteBar({ onAdd, onDelete, onHighlightBase }) {
         >
           {(() => {
             const Custom = PALETTE_CUSTOM_ICONS[item.type];
-            if (Custom) return <Custom />;
-            return (
-              <Icon
-                icon={item.icon}
-                width={22}
-                height={22}
-                {...(item.colorIcon
-                  ? {}
-                  : { style: { color: item.color }, className: item.className })}
-              />
-            );
+            return Custom ? <Custom /> : null;
           })()}
           {item.label}
         </button>
@@ -85,7 +74,7 @@ export default function PaletteBar({ onAdd, onDelete, onHighlightBase }) {
         title="Hapus komponen terpilih (Delete / Backspace)"
         className="flex w-20 flex-col items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-2 text-[11px] font-medium text-red-600 hover:bg-red-100"
       >
-        <Icon icon="mdi:trash-can-outline" width={22} height={22} className="text-red-500" />
+        <PaletteTrashIcon />
         Hapus
       </button>
     </div>

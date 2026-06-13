@@ -111,7 +111,7 @@ const View3D = forwardRef(function View3D({ dims }, ref) {
         };
         scene.add(plate(safetyM, 0xc9d6bb, 0.13));
         scene.add(plate(dims.fato || 14, 0xb9bec4, 0.3));
-        scene.add(plate(dims.tlof || 11, 0x8a9097, 0.48));
+        scene.add(plate(dims.tlof || 11, 0x4f6868, 0.48));
 
         const mark = new THREE.Mesh(
           new THREE.BoxGeometry((dims.tlof || 11) * 0.4, 0.05, (dims.tlof || 11) * 0.4),

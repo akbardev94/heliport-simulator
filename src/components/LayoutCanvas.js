@@ -1,8 +1,19 @@
 "use client";
 
-import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
-import { BASE_TYPES, DRAGGABLE_TYPES } from "@/lib/paletteConfig";
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
+import { BASE_TYPES, DRAGGABLE_TYPES, TLOF_TYPES, isTlofType } from "@/lib/paletteConfig";
 import { loadWindconeImage } from "@/lib/windconeArt";
+import {
+  loadObstacleImage,
+  isObstacleType,
+  obstacleKindFromType,
+} from "@/lib/obstacleArt";
+import {
+  createWeatherLabel,
+  defaultWeatherPosition,
+  isWeatherType,
+} from "@/lib/weatherLabelArt";
+import { loadMarshalerImage } from "@/lib/marshalerArt";
 
 // Fabric is imported dynamically (browser-only).
 let fabric = null;
@@ -11,26 +22,34 @@ const COLORS = {
   ground: "#7d9b5e",
   safety: "#c9d6bb",
   fato: "#b9bec4",
-  tlof: "#8a9097",
-  marking: "#f5a623",
+  tlof: "#4f6868",
+  marking: "#f0c931",
+  markingCorner: "#c99200",
 };
 
 // Real-world default sizes (metres) for placeable components.
 const COMPONENT_M = {
-  obstacle: 6, // 6 m x 6 m building/obstacle
   windconePole: 8, // 8 m pole
   approachLen: 30, // 30 m arrow
 };
 
+const MIN_VIEW_ZOOM = 0.5;
+const MAX_VIEW_ZOOM = 3;
+const VIEW_ZOOM_STEP = 1.15;
+
 const LayoutCanvas = forwardRef(function LayoutCanvas(
-  { dims, onComponentsChange, onSelectInfo },
+  { dims, onComponentsChange, onSelectInfo, selectInfo },
   ref
 ) {
   const elRef = useRef(null);
   const canvasRef = useRef(null);
   const scaleRef = useRef(8); // px per metre
+  const viewZoomRef = useRef(1);
+  const baseSizeRef = useRef({ w: 640, h: 420 });
   const componentsRef = useRef(new Set());
   const keyHandlerRef = useRef(null);
+  const wheelHandlerRef = useRef(null);
+  const [viewZoomPct, setViewZoomPct] = useState(100);
 
   useImperativeHandle(ref, () => ({
     addComponent: (type) => addComponent(type),
@@ -40,12 +59,12 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     clearComponents: () => clearComponents(),
     reset: () => resetCanvas(),
     highlightBase: (type) => highlightBase(type),
+    zoomIn: () => zoomByFactor(VIEW_ZOOM_STEP),
+    zoomOut: () => zoomByFactor(1 / VIEW_ZOOM_STEP),
+    resetZoom: () => resetViewZoom(),
     getCanvasEl: () => elRef.current,
     getGeometry: () => getGeometry(),
-    exportDataURL: () =>
-      canvasRef.current
-        ? canvasRef.current.toDataURL({ format: "png", multiplier: 2 })
-        : null,
+    exportDataURL: () => exportCanvasDataURL(),
   }));
 
   function baseRect(type) {
@@ -60,7 +79,7 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     if (!c) return null;
     const s = scaleRef.current;
     const areas = {
-      tlof: baseRect("tlof"),
+      tlof: baseRect("tlof") || baseRect("tlof-rooftop"),
       fato: baseRect("fato"),
       safety: baseRect("safety"),
     };
@@ -88,7 +107,10 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     if (c) {
       c.getObjects().forEach((o) => {
         if (o.heliType) types.add(o.heliType);
-        if (o.heliBase) types.add(o.heliBase);
+        if (o.heliBase) {
+          types.add(o.heliBase);
+          if (isTlofType(o.heliBase)) types.add("tlof");
+        }
       });
     }
     componentsRef.current = types;
@@ -98,8 +120,51 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   function pointerFromClient(clientX, clientY) {
     const c = canvasRef.current;
     if (!c) return null;
-    const rect = c.upperCanvasEl.getBoundingClientRect();
-    return { x: clientX - rect.left, y: clientY - rect.top };
+    const pointer = c.getPointer({ clientX, clientY });
+    return { x: pointer.x, y: pointer.y };
+  }
+
+  function clampViewZoom(zoom) {
+    return Math.min(MAX_VIEW_ZOOM, Math.max(MIN_VIEW_ZOOM, zoom));
+  }
+
+  function setViewZoom(zoom, point) {
+    const c = canvasRef.current;
+    if (!c || !fabric) return;
+    const next = clampViewZoom(zoom);
+    const anchor =
+      point ||
+      new fabric.Point(baseSizeRef.current.w / 2, baseSizeRef.current.h / 2);
+    c.zoomToPoint(anchor, next);
+    viewZoomRef.current = next;
+    setViewZoomPct(Math.round(next * 100));
+    c.requestRenderAll();
+  }
+
+  function zoomByFactor(factor, point) {
+    setViewZoom(viewZoomRef.current * factor, point);
+  }
+
+  function resetViewZoom() {
+    const c = canvasRef.current;
+    if (!c) return;
+    c.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    viewZoomRef.current = 1;
+    setViewZoomPct(100);
+    c.requestRenderAll();
+  }
+
+  function exportCanvasDataURL() {
+    const c = canvasRef.current;
+    if (!c) return null;
+    const savedTransform = c.viewportTransform.slice();
+    const savedZoom = viewZoomRef.current;
+    c.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    c.setZoom(1);
+    const url = c.toDataURL({ format: "png", multiplier: 2 });
+    c.setViewportTransform(savedTransform);
+    c.setZoom(savedZoom);
+    return url;
   }
 
   function metres(px) {
@@ -111,16 +176,26 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     if (!obj || !onSelectInfo) return onSelectInfo?.(null);
     const wPx = obj.getScaledWidth();
     const hPx = obj.getScaledHeight();
-    const baseLabels = { tlof: "TLOF", fato: "FATO", safety: "Safety Area" };
+    const baseLabels = {
+      tlof: "TLOF",
+      "tlof-rooftop": "TLOF Atap",
+      fato: "FATO",
+      safety: "Safety Area",
+    };
     const typeLabels = {
       obstacle: "Obstacle",
+      gedung: "Gedung",
+      pohon: "Pohon",
       windcone: "Wind Cone",
+      imc: "IMC",
+      vmc: "VMC",
+      marshaler: "Marshaler",
       approach: "Approach Path",
     };
-    const kind = obj.heliBase || obj.heliType;
+    const kind = obj.heliBase || obj.heliObstacleKind || obj.heliType;
     onSelectInfo({
       type: kind,
-      label: baseLabels[kind] || typeLabels[kind] || "Komponen",
+      label: typeLabels[kind] || baseLabels[kind] || "Komponen",
       w: metres(wPx),
       h: metres(hPx),
     });
@@ -141,8 +216,8 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   }
 
   function canvasCenter() {
-    const c = canvasRef.current;
-    return { cx: c.getWidth() / 2, cy: c.getHeight() / 2 };
+    const { w, h } = baseSizeRef.current;
+    return { cx: w / 2, cy: h / 2 };
   }
 
   function drawGround() {
@@ -154,6 +229,7 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   }
 
   function resetCanvas() {
+    resetViewZoom();
     drawGround();
     onSelectInfo?.(null);
     canvasRef.current?.requestRenderAll();
@@ -188,21 +264,52 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     } else if (type === "fato") {
       children = [mk(fatoD, COLORS.fato, "#ffffff", [4, 4])];
     } else if (type === "tlof") {
-      const tlof = mk(tlofD, COLORS.tlof, "#cfd4d9", null);
-      const circleR = (tlofD / 2) * 0.62;
-      const square = new fabric.Rect({
-        left: 0,
-        top: 0,
-        width: circleR * 2.4,
-        height: circleR * 2.4,
-        originX: "center",
-        originY: "center",
-        fill: "",
-        stroke: COLORS.marking,
-        strokeWidth: 3,
+      const half = tlofD / 2;
+      const markW = Math.max(3, tlofD * 0.028);
+      const cornerSize = Math.max(6, tlofD * 0.1);
+      const circleR = half * 0.84;
+
+      const pad = new fabric.Rect({
+        left: -half,
+        top: -half,
+        width: tlofD,
+        height: tlofD,
+        fill: COLORS.tlof,
         selectable: false,
         evented: false,
       });
+
+      const square = new fabric.Rect({
+        left: -half,
+        top: -half,
+        width: tlofD,
+        height: tlofD,
+        fill: "",
+        stroke: COLORS.marking,
+        strokeWidth: markW,
+        selectable: false,
+        evented: false,
+      });
+
+      const cornerPositions = [
+        { x: -half, y: -half },
+        { x: half - cornerSize, y: -half },
+        { x: -half, y: half - cornerSize },
+        { x: half - cornerSize, y: half - cornerSize },
+      ];
+      const corners = cornerPositions.map(
+        ({ x, y }) =>
+          new fabric.Rect({
+            left: x,
+            top: y,
+            width: cornerSize,
+            height: cornerSize,
+            fill: COLORS.markingCorner,
+            selectable: false,
+            evented: false,
+          })
+      );
+
       const circle = new fabric.Circle({
         left: 0,
         top: 0,
@@ -211,23 +318,89 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
         originY: "center",
         fill: "",
         stroke: COLORS.marking,
-        strokeWidth: 3,
+        strokeWidth: markW,
         selectable: false,
         evented: false,
       });
+
       const h = new fabric.Text("H", {
         left: 0,
         top: 0,
         originX: "center",
         originY: "center",
-        fontSize: Math.max(22, circleR * 1.15),
-        fontWeight: "800",
+        fontSize: Math.max(20, circleR * 1.05),
+        fontWeight: "900",
         fill: "#ffffff",
-        fontFamily: "Inter, sans-serif",
+        fontFamily: "Arial, Helvetica, sans-serif",
         selectable: false,
         evented: false,
       });
-      children = [tlof, square, circle, h];
+
+      children = [pad, square, ...corners, circle, h];
+    } else if (type === "tlof-rooftop") {
+      const half = tlofD / 2;
+      const red = "#d8161f";
+      const white = "#ffffff";
+      const borderW = Math.max(2, tlofD * 0.012);
+      const armW = tlofD * 0.2;
+      const armLen = tlofD * 0.82;
+
+      const pad = new fabric.Rect({
+        left: -half,
+        top: -half,
+        width: tlofD,
+        height: tlofD,
+        fill: red,
+        selectable: false,
+        evented: false,
+      });
+
+      const border = new fabric.Rect({
+        left: -half,
+        top: -half,
+        width: tlofD,
+        height: tlofD,
+        fill: "",
+        stroke: white,
+        strokeWidth: borderW,
+        selectable: false,
+        evented: false,
+      });
+
+      const vArm = new fabric.Rect({
+        left: -armW / 2,
+        top: -armLen / 2,
+        width: armW,
+        height: armLen,
+        fill: white,
+        selectable: false,
+        evented: false,
+      });
+
+      const hArm = new fabric.Rect({
+        left: -armLen / 2,
+        top: -armW / 2,
+        width: armLen,
+        height: armW,
+        fill: white,
+        selectable: false,
+        evented: false,
+      });
+
+      const h = new fabric.Text("H", {
+        left: 0,
+        top: 0,
+        originX: "center",
+        originY: "center",
+        fontSize: Math.max(18, armW * 1.1),
+        fontWeight: "900",
+        fill: red,
+        fontFamily: "Arial, Helvetica, sans-serif",
+        selectable: false,
+        evented: false,
+      });
+
+      children = [pad, border, vArm, hArm, h];
     } else {
       return null;
     }
@@ -255,7 +428,7 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     const c = canvasRef.current;
     if (!c) return;
     let idx = 0;
-    ["safety", "fato", "tlof"].forEach((type) => {
+    ["safety", "fato", ...TLOF_TYPES].forEach((type) => {
       const obj = c.getObjects().find((o) => o.heliBase === type);
       if (obj) {
         c.moveTo(obj, idx);
@@ -268,6 +441,13 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   function addBaseLayer(type, { silent = false, at = null } = {}) {
     const c = canvasRef.current;
     if (!c || !fabric || !BASE_TYPES.includes(type)) return;
+
+    if (isTlofType(type)) {
+      c.getObjects()
+        .filter((o) => isTlofType(o.heliBase) && o.heliBase !== type)
+        .forEach((o) => c.remove(o));
+    }
+
     if (c.getObjects().some((o) => o.heliBase === type)) {
       if (!silent) highlightBase(type);
       return;
@@ -328,8 +508,8 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     const segCount = 5;
     const barW = seg * segCount;
     const barH = 10;
-    const x0 = c.getWidth() - barW - 20;
-    const y0 = c.getHeight() - 34;
+    const x0 = baseSizeRef.current.w - barW - 20;
+    const y0 = baseSizeRef.current.h - 34;
     const parts = [];
 
     for (let i = 0; i < segCount; i++) {
@@ -393,8 +573,8 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
       addBaseLayer(type, { at });
       return;
     }
-    const W = c.getWidth();
-    const H = c.getHeight();
+    const W = baseSizeRef.current.w;
+    const H = baseSizeRef.current.h;
     const s = scaleRef.current;
     let obj = null;
 
@@ -405,20 +585,36 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
         placeComponent(img, pos);
       });
       return;
-    } else if (type === "obstacle") {
-      const sizePx = COMPONENT_M.obstacle * s;
-      obj = new fabric.Rect({
-        left: pos?.x ?? 80,
-        top: pos?.y ?? 80,
-        width: sizePx,
-        height: sizePx,
-        fill: "#5b6470",
-        stroke: "#2b3038",
-        strokeWidth: 2,
-        rx: 3,
-        ry: 3,
+    } else if (isObstacleType(type)) {
+      const kind = obstacleKindFromType(type);
+      loadObstacleImage(fabric, kind, s, (img) => {
+        if (!img || canvasRef.current !== c) return;
+        if (!pos) img.set({ left: 80, top: 80 });
+        placeComponent(img, pos);
       });
-      obj.heliType = "obstacle";
+      return;
+    } else if (type === "marshaler") {
+      loadMarshalerImage(fabric, s, (img) => {
+        if (!img || canvasRef.current !== c) return;
+        if (!pos) {
+          img.set({
+            left: W / 2 - img.getScaledWidth() / 2,
+            top: H / 2 - img.getScaledHeight() / 2,
+          });
+        }
+        placeComponent(img, pos);
+      });
+      return;
+    } else if (isWeatherType(type)) {
+      const existing = c.getObjects().find((o) => o.heliType === type);
+      if (existing) {
+        c.setActiveObject(existing);
+        emitInfo(existing);
+        c.requestRenderAll();
+        return;
+      }
+      obj = createWeatherLabel(fabric, type, s);
+      if (!pos) defaultWeatherPosition(c, obj, type);
     } else if (type === "approach") {
       const lenPx = COMPONENT_M.approachLen * s;
       const line = new fabric.Line([0, 12, lenPx, 12], {
@@ -444,7 +640,7 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   function removeSelected() {
     const c = canvasRef.current;
     if (!c) return;
-    const active = c.getActiveObjects().filter((o) => o.heliType);
+    const active = c.getActiveObjects().filter((o) => o.heliType || o.heliBase);
     if (active.length === 0) return;
     active.forEach((o) => c.remove(o));
     c.discardActiveObject();
@@ -467,6 +663,7 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   // init
   useEffect(() => {
     let mounted = true;
+    let canvasEl = null;
     (async () => {
       const mod = await import("fabric");
       fabric = mod.fabric || mod.default || mod;
@@ -474,6 +671,7 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
       const parent = elRef.current.parentElement;
       const width = parent ? parent.clientWidth : 640;
       const height = 420;
+      baseSizeRef.current = { w: width, h: height };
       const c = new fabric.Canvas(elRef.current, {
         width,
         height,
@@ -497,6 +695,18 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
       drawGround();
       notify();
 
+      canvasEl = elRef.current;
+      wheelHandlerRef.current = (e) => {
+        if (!canvasRef.current) return;
+        e.preventDefault();
+        const pointer = canvasRef.current.getPointer(e);
+        const factor = e.deltaY < 0 ? VIEW_ZOOM_STEP : 1 / VIEW_ZOOM_STEP;
+        zoomByFactor(factor, new fabric.Point(pointer.x, pointer.y));
+      };
+      canvasEl?.addEventListener("wheel", wheelHandlerRef.current, {
+        passive: false,
+      });
+
       // Keyboard: Delete / Backspace removes the selected component.
       keyHandlerRef.current = (e) => {
         if (e.key !== "Delete" && e.key !== "Backspace") return;
@@ -516,6 +726,10 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     })();
     return () => {
       mounted = false;
+      if (wheelHandlerRef.current && canvasEl) {
+        canvasEl.removeEventListener("wheel", wheelHandlerRef.current);
+        wheelHandlerRef.current = null;
+      }
       if (keyHandlerRef.current) {
         window.removeEventListener("keydown", keyHandlerRef.current);
         keyHandlerRef.current = null;
@@ -531,9 +745,9 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   // redraw base when dims change
   useEffect(() => {
     if (!canvasRef.current || !fabric) return;
-    const c = canvasRef.current;
+    const { w, h } = baseSizeRef.current;
     const safetyMetres = dims.fato + 2 * dims.safety || 20;
-    scaleRef.current = (Math.min(c.getWidth(), c.getHeight()) * 0.7) / safetyMetres;
+    scaleRef.current = (Math.min(w, h) * 0.7) / safetyMetres;
     rebuildForDims();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dims.fato, dims.safety, dims.tlof]);
@@ -541,7 +755,7 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   function onDrop(e) {
     e.preventDefault();
     const type = e.dataTransfer.getData("heli/type");
-    if (DRAGGABLE_TYPES.includes(type) || BASE_TYPES.includes(type)) {
+    if (DRAGGABLE_TYPES.includes(type) || BASE_TYPES.includes(type) || isObstacleType(type) || isWeatherType(type)) {
       addComponent(type, pointerFromClient(e.clientX, e.clientY));
     }
   }
@@ -559,6 +773,42 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
       onDragEnter={(e) => e.preventDefault()}
     >
       <canvas ref={elRef} />
+      <div className="absolute right-3 top-3 z-10 flex items-center gap-1 rounded-md bg-white/95 p-1 shadow ring-1 ring-slate-200">
+        <button
+          type="button"
+          className="grid h-7 w-7 place-items-center rounded text-sm font-bold text-slate-600 hover:bg-slate-100"
+          onClick={() => zoomByFactor(1 / VIEW_ZOOM_STEP)}
+          title="Zoom out"
+          aria-label="Zoom out"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          className="min-w-[3rem] rounded px-1 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-100"
+          onClick={resetViewZoom}
+          title="Reset zoom"
+        >
+          {viewZoomPct}%
+        </button>
+        <button
+          type="button"
+          className="grid h-7 w-7 place-items-center rounded text-sm font-bold text-slate-600 hover:bg-slate-100"
+          onClick={() => zoomByFactor(VIEW_ZOOM_STEP)}
+          title="Zoom in"
+          aria-label="Zoom in"
+        >
+          +
+        </button>
+      </div>
+      {selectInfo && (
+        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-md bg-slate-900/80 px-3 py-1.5 text-xs font-semibold text-white shadow">
+          {selectInfo.label}: {selectInfo.w} × {selectInfo.h} m
+        </div>
+      )}
+      <p className="pointer-events-none absolute bottom-2 left-3 z-10 text-[10px] text-white/80 drop-shadow">
+        Scroll untuk zoom
+      </p>
     </div>
   );
 });

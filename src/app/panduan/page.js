@@ -19,7 +19,7 @@ const STEPS = [
     title: "Pilih Komponen",
     points: [
       "Komponen dasar TLOF, FATO, dan Safety Area digambar otomatis sesuai perhitungan.",
-      "Komponen tambahan: Approach Path, Wind Cone, dan Obstacle tersedia pada palet.",
+      "Komponen tambahan: Approach Path, Wind Cone, Gedung, dan Pohon tersedia pada palet.",
     ],
   },
   {

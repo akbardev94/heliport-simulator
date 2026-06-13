@@ -189,21 +189,15 @@ export default function Page() {
                   />
                   <p className="my-3 flex items-center gap-2 rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-800 ring-1 ring-sky-100">
                     <span className="grid h-4 w-4 place-items-center rounded-full bg-sky-500 text-[10px] font-bold text-white">i</span>
-                    Petunjuk: Klik atau drag komponen ke kanvas. TLOF, FATO, dan Safety Area bisa dipilih lalu digeser ke posisi yang diinginkan.
+                    Petunjuk: Klik atau drag komponen ke kanvas. TLOF, FATO, dan Safety Area bisa dipilih, digeser, atau dihapus dengan tombol Del / Backspace.
                   </p>
-                  <div className="relative">
-                    <LayoutCanvas
+                  <LayoutCanvas
                       ref={canvasRef}
                       dims={dims}
                       onComponentsChange={setPresent}
                       onSelectInfo={setSelInfo}
+                      selectInfo={selInfo}
                     />
-                    {selInfo && (
-                      <div className="pointer-events-none absolute left-3 top-3 rounded-md bg-slate-900/80 px-3 py-1.5 text-xs font-semibold text-white shadow">
-                        {selInfo.label}: {selInfo.w} × {selInfo.h} m
-                      </div>
-                    )}
-                  </div>
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex gap-2">
                       <button className="btn-primary" onClick={() => canvasRef.current?.reset()}>
@@ -285,7 +279,6 @@ export default function Page() {
     </MathJaxContext>
   );
 }
-
 /* ---------------- sub components ---------------- */
 
 function Stepper({ step, setStep }) {
@@ -413,7 +406,7 @@ function LocationPanel({ windDir, setWindDir, lokasi, setLokasi }) {
         </label>
         {lokasi.adaObstacle && (
           <p className="rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700 ring-1 ring-amber-100">
-            Tambahkan komponen Obstacle pada kanvas, lalu jauhkan dari approach path.
+            Tambahkan komponen Gedung atau Pohon pada kanvas, lalu jauhkan dari approach path.
           </p>
         )}
         <div className="flex flex-col items-center py-1">
@@ -809,3 +802,4 @@ function StepCard({ step }) {
     </div>
   );
 }
+
